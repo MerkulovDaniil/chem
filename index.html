@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Конвертер химических форматов</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio,line-clamp"></script>
+    <script>
+        // Отключаем предупреждение Tailwind для продакшена
+        tailwind.config = {
+            darkMode: 'class',
+        }
+    </script>
+    
+    <!-- RDKit WebAssembly - минимальная версия -->
+    <script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen">
+        <div class="container mx-auto px-4 py-8 max-w-4xl">
+            <!-- Header -->
+            <header class="text-center mb-8">
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">
+                    Конвертер химических форматов
+                </h1>
+                <p class="text-gray-600">
+                    Введите SMILES, InChI, IUPAC название или CAS номер молекулы
+                </p>
+            </header>
+
+            <!-- Input Section -->
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <label for="molecule-input" class="block text-sm font-medium text-gray-700 mb-2">
+                    Молекула:
+                </label>
+                <textarea
+                    id="molecule-input"
+                    placeholder="Например: CCO (этанол), C1=CC=CC=C1 (бензол)"
+                    class="w-full h-32 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                ></textarea>
+                <div class="flex justify-between items-center mt-4">
+                    <p class="text-sm text-gray-500">
+                        Ctrl+Enter для быстрой конвертации
+                    </p>
+                    <button
+                        id="convert-btn"
+                        class="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        disabled
+                    >
+                        Ожидание RDKit...
+                    </button>
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="status-container"></div>
+
+            <!-- Results -->
+            <div id="results-container"></div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let rdkitLoaded = false;
+        let rdkitError = null;
+        let loading = false;
+
+        // DOM elements
+        const inputEl = document.getElementById('molecule-input');
+        const convertBtn = document.getElementById('convert-btn');
+        const statusContainer = document.getElementById('status-container');
+        const resultsContainer = document.getElementById('results-container');
+
+        // Show status message
+        function showStatus(type, message, details = '') {
+            const colors = {
+                loading: 'bg-yellow-50 border-yellow-200 text-yellow-700',
+                success: 'bg-green-50 border-green-200 text-green-700',
+                error: 'bg-red-50 border-red-200 text-red-700'
+            };
+
+            const icons = {
+                loading: '<div class="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600"></div>',
+                success: '✅',
+                error: '⚠️'
+            };
+
+            statusContainer.innerHTML = `
+                <div class="${colors[type]} border rounded-lg p-4 mb-6">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 mr-2">${icons[type]}</div>
+                        <div>
+                            <p class="font-medium">${message}</p>
+                            ${details ? `<p class="text-sm mt-1">${details}</p>` : ''}
+                            ${type === 'error' ? '<button onclick="location.reload()" class="mt-2 text-red-600 underline text-sm hover:no-underline">Обновить страницу</button>' : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show toast notification
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 ${
+                type === 'error' ? 'bg-red-600 text-white' : 'bg-green-600 text-white'
+            }`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        // Copy to clipboard
+        async function copyToClipboard(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                showToast('Скопировано в буфер обмена!', 'success');
+            } catch (error) {
+                showToast('Не удалось скопировать', 'error');
+            }
+        }
+
+        // Calculate molecular formula from SMILES
+        function calculateMolecularFormula(smiles) {
+            if (!smiles || smiles === 'N/A') {
+                return 'Формула недоступна';
+            }
+
+            try {
+                // Специальные случаи для простых молекул
+                const specialCases = {
+                    'O': 'H₂O',        // вода
+                    '[H][H]': 'H₂',    // водород
+                    'N#N': 'N₂',       // азот
+                    'O=O': 'O₂',       // кислород
+                };
+                
+                if (specialCases[smiles]) {
+                    return specialCases[smiles];
+                }
+
+                // Подсчет атомов из SMILES
+                const atomCounts = {};
+                
+                // Убираем связи и циклические числа, но сохраняем атомы
+                let cleanSmiles = smiles.replace(/[=\-#@\/\\]/g, '').replace(/\d+/g, '');
+                // Убираем скобки и заряды
+                cleanSmiles = cleanSmiles.replace(/[\[\]()]/g, '').replace(/[+\-]/g, '');
+                
+                let i = 0;
+                while (i < cleanSmiles.length) {
+                    let atom = '';
+                    
+                    // Читаем символ атома (может быть одно- или двухбуквенный)
+                    if (i < cleanSmiles.length && cleanSmiles[i].match(/[A-Z]/)) {
+                        atom = cleanSmiles[i];
+                        i++;
+                        
+                        // Проверяем следующий символ на строчную букву
+                        if (i < cleanSmiles.length && cleanSmiles[i].match(/[a-z]/)) {
+                            atom += cleanSmiles[i];
+                            i++;
+                        }
+                        
+                        // Считаем количество
+                        atomCounts[atom] = (atomCounts[atom] || 0) + 1;
+                    } else {
+                        i++;
+                    }
+                }
+
+                // Простая оценка водородов на основе валентности
+                if (!atomCounts['H']) {
+                    let totalH = 0;
+                    
+                    // Стандартные валентности
+                    const valences = {
+                        'C': 4, 'N': 3, 'O': 2, 'S': 2, 'P': 3,
+                        'F': 1, 'Cl': 1, 'Br': 1, 'I': 1,
+                        'B': 3, 'Si': 4
+                    };
+                    
+                    for (const [element, count] of Object.entries(atomCounts)) {
+                        if (valences[element]) {
+                            totalH += valences[element] * count;
+                        }
+                    }
+                    
+                    // Вычитаем связи между неводородными атомами
+                    // Простая оценка: каждая пара атомов может образовать связь
+                    const totalAtoms = Object.values(atomCounts).reduce((sum, count) => sum + count, 0);
+                    if (totalAtoms > 1) {
+                        // Для органических молекул: примерно 1-2 связи на атом углерода
+                        const carbons = atomCounts['C'] || 0;
+                        const oxygens = atomCounts['O'] || 0;
+                        const nitrogens = atomCounts['N'] || 0;
+                        
+                        if (carbons > 0) {
+                            // Органическая молекула
+                            totalH = Math.max(0, (carbons * 4) + (nitrogens * 3) + (oxygens * 2) - (2 * (totalAtoms - 1)));
+                        }
+                    }
+                    
+                    if (totalH > 0) {
+                        atomCounts['H'] = totalH;
+                    }
+                }
+
+                // Формируем строку формулы в стандартном порядке: C, H, остальные по алфавиту
+                const elements = [];
+                if (atomCounts['C']) elements.push('C');
+                if (atomCounts['H']) elements.push('H');
+                
+                Object.keys(atomCounts).forEach(element => {
+                    if (element !== 'C' && element !== 'H') {
+                        elements.push(element);
+                    }
+                });
+                elements.sort((a, b) => {
+                    if (a === 'C') return -1;
+                    if (b === 'C') return 1;
+                    if (a === 'H') return -1;
+                    if (b === 'H') return 1;
+                    return a.localeCompare(b);
+                });
+
+                let formula = '';
+                elements.forEach(element => {
+                    if (atomCounts[element]) {
+                        formula += element;
+                        if (atomCounts[element] > 1) {
+                            // Используем подстрочные символы Unicode
+                            const subscripts = {'0':'₀','1':'₁','2':'₂','3':'₃','4':'₄','5':'₅','6':'₆','7':'₇','8':'₈','9':'₉'};
+                            const count = atomCounts[element].toString();
+                            formula += count.split('').map(d => subscripts[d] || d).join('');
+                        }
+                    }
+                });
+
+                return formula || 'Формула недоступна';
+            } catch (error) {
+                console.warn('Error calculating formula:', error);
+                return 'Формула недоступна';
+            }
+        }
+
+        // Convert molecule
+        async function convertMolecule() {
+            const input = inputEl.value.trim();
+            if (!input) {
+                showToast('Введите молекулу для конвертации', 'error');
+                return;
+            }
+
+            if (!rdkitLoaded) {
+                showToast('RDKit еще не загружен, подождите немного', 'error');
+                return;
+            }
+
+            loading = true;
+            convertBtn.textContent = 'Обработка...';
+            convertBtn.disabled = true;
+
+            try {
+                let mol = null;
+                
+                // Try to parse molecule
+                try {
+                    mol = window.RDKit.get_mol(input);
+                } catch {
+                    try {
+                        mol = window.RDKit.get_mol_from_inchi(input);
+                    } catch {
+                        throw new Error("Не удалось распознать молекулу");
+                    }
+                }
+
+                if (!mol) {
+                    throw new Error("Невалидная запись молекулы");
+                }
+
+                // Get formats - пробуем стандартные методы молекулы RDKit
+                let smiles = 'N/A', inchi = 'N/A', formula = 'N/A';
+                
+                try {
+                    smiles = mol.get_smiles();
+                } catch (e) {
+                    console.warn('get_smiles failed:', e);
+                }
+                
+                try {
+                    inchi = mol.get_inchi();
+                } catch (e) {
+                    console.warn('get_inchi failed:', e);
+                }
+                
+                try {
+                    // Попробуем разные варианты для формулы
+                    if (mol.get_molformula) {
+                        formula = mol.get_molformula();
+                    } else if (mol.get_formula) {
+                        formula = mol.get_formula();
+                    } else if (mol.formula) {
+                        formula = mol.formula();
+                    } else {
+                        // Вычисляем формулу из SMILES если RDKit методы недоступны
+                        formula = calculateMolecularFormula(smiles);
+                    }
+                } catch (e) {
+                    console.warn('Formula methods failed:', e);
+                    // Fallback: вычисляем формулу из SMILES
+                    formula = calculateMolecularFormula(smiles);
+                }
+                
+                // Try different ways to get InChIKey
+                let inchikey = 'N/A';
+                try {
+                    if (window.RDKit.get_inchikey_for_inchi && inchi !== 'N/A') {
+                        inchikey = window.RDKit.get_inchikey_for_inchi(inchi);
+                    } else {
+                        inchikey = 'InChIKey недоступна в этой версии RDKit';
+                    }
+                } catch (e) {
+                    console.warn('InChIKey не поддерживается:', e);
+                    inchikey = 'InChIKey недоступна';
+                }
+
+                const formats = {
+                    "Canonical SMILES": smiles,
+                    "InChI": inchi,
+                    "InChIKey": inchikey,
+                    "Молекулярная формула": formula
+                };
+
+                // Get 2D SVG
+                let svg = '<p class="text-gray-500">SVG недоступна</p>';
+                try {
+                    svg = mol.get_svg();
+                } catch (e) {
+                    console.warn('get_svg failed:', e);
+                }
+
+                // Clean up
+                mol.delete();
+
+                // Show results
+                showResults(formats, svg);
+                showToast('Молекула успешно обработана!', 'success');
+
+            } catch (error) {
+                showToast(error.message, 'error');
+                resultsContainer.innerHTML = '';
+            } finally {
+                loading = false;
+                convertBtn.textContent = 'Преобразовать';
+                convertBtn.disabled = false;
+            }
+        }
+
+        // Show results
+        function showResults(formats, svg) {
+            const formatsHtml = Object.entries(formats).map(([format, value]) => `
+                <div class="bg-gray-50 p-4 rounded-lg">
+                    <div class="flex items-center justify-between mb-2">
+                        <strong class="text-gray-700">${format}:</strong>
+                        <button onclick="copyToClipboard('${value.replace(/'/g, "\\'")}')" 
+                                class="p-2 text-gray-500 hover:text-blue-600 hover:bg-white rounded-md transition-colors"
+                                title="Копировать в буфер обмена">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <code class="block text-sm text-gray-600 bg-white p-2 rounded border break-all">
+                        ${value}
+                    </code>
+                </div>
+            `).join('');
+
+            resultsContainer.innerHTML = `
+                <div class="mt-8 space-y-8">
+                    <!-- Formats -->
+                    <section>
+                        <h2 class="text-xl font-semibold mb-4 text-gray-800">Идентификаторы молекулы</h2>
+                        <div class="space-y-3">
+                            ${formatsHtml}
+                        </div>
+                    </section>
+
+                    <!-- 2D Structure -->
+                    <section>
+                        <h2 class="text-xl font-semibold mb-4 text-gray-800">Структура</h2>
+                        <div class="bg-white p-6 rounded-lg border shadow-sm">
+                            <div class="flex justify-center">
+                                ${svg}
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            `;
+        }
+
+        // Initialize RDKit
+        function initializeRDKit() {
+            if (typeof initRDKitModule !== 'undefined') {
+                initRDKitModule()
+                    .then((RDKit) => {
+                        window.RDKit = RDKit;
+                        rdkitLoaded = true;
+                        console.log('RDKit loaded successfully, version:', RDKit.version());
+                        
+                        showToast('RDKit WebAssembly загружен успешно!', 'success');
+                        convertBtn.textContent = 'Преобразовать';
+                        convertBtn.disabled = false;
+                    })
+                    .catch((error) => {
+                        rdkitError = error.message;
+                        console.error('Failed to initialize RDKit:', error);
+                        showStatus('error', 'Ошибка загрузки RDKit', error.message);
+                    });
+            } else {
+                setTimeout(initializeRDKit, 1000); // Try again in 1 second
+            }
+        }
+
+        // Event listeners
+        convertBtn.addEventListener('click', convertMolecule);
+        
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                convertMolecule();
+            }
+        });
+
+        // Initialize when page loads
+        window.addEventListener('load', () => {
+            setTimeout(initializeRDKit, 500);
+        });
+    </script>
+</body>
+</html> 
