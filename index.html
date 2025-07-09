@@ -14,7 +14,7 @@
         }
     </script>
     
-    <!-- RDKit WebAssembly - минимальная версия -->
+    <!-- RDKit WebAssembly - минимальная версия для поддержки InChI -->
     <script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
 </head>
 <body class="bg-gray-50">
@@ -26,24 +26,62 @@
                     Конвертер химических форматов
                 </h1>
                 <p class="text-gray-600">
-                    Введите SMILES, InChI, IUPAC название или CAS номер молекулы
+                    Введите SMILES или IUPAC название молекулы для конвертации
                 </p>
             </header>
 
             <!-- Input Section -->
             <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <!-- Mode Selection -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Режим работы:
+                    </label>
+                    <div class="flex space-x-4">
+                        <label class="flex items-center">
+                            <input
+                                type="radio"
+                                name="input-mode"
+                                value="iupac"
+                                checked
+                                class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 focus:ring-2"
+                            >
+                            <span class="ml-2 text-sm font-medium text-gray-700">IUPAC название</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input
+                                type="radio"
+                                name="input-mode"
+                                value="smiles"
+                                class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 focus:ring-2"
+                            >
+                            <span class="ml-2 text-sm font-medium text-gray-700">SMILES</span>
+                        </label>
+                    </div>
+                </div>
+
                 <label for="molecule-input" class="block text-sm font-medium text-gray-700 mb-2">
                     Молекула:
                 </label>
                 <textarea
                     id="molecule-input"
-                    placeholder="Например: CCO (этанол), C1=CC=CC=C1 (бензол)"
+                    placeholder="Например: ethanol, benzene, benzol"
                     class="w-full h-32 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                 ></textarea>
+                <!-- Example buttons -->
+                <div class="mb-4">
+                    <p class="text-sm font-medium text-gray-700 mb-2">Примеры:</p>
+                    <div id="examples-container" class="flex flex-wrap gap-2">
+                        <!-- Examples will be populated by JavaScript -->
+                    </div>
+                </div>
+
                 <div class="flex justify-between items-center mt-4">
-                    <p class="text-sm text-gray-500">
-                        Ctrl+Enter для быстрой конвертации
-                    </p>
+                    <div class="flex items-center space-x-2">
+                        <p class="text-sm text-gray-500">
+                            Ctrl+Enter для быстрой конвертации
+                        </p>
+                    </div>
                     <button
                         id="convert-btn"
                         class="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -73,6 +111,7 @@
         const convertBtn = document.getElementById('convert-btn');
         const statusContainer = document.getElementById('status-container');
         const resultsContainer = document.getElementById('results-container');
+        const examplesContainer = document.getElementById('examples-container');
 
         // Show status message
         function showStatus(type, message, details = '') {
@@ -124,6 +163,100 @@
             } catch (error) {
                 showToast('Не удалось скопировать', 'error');
             }
+        }
+
+        // Get selected input mode
+        function getSelectedMode() {
+            const modeRadios = document.querySelectorAll('input[name="input-mode"]');
+            for (const radio of modeRadios) {
+                if (radio.checked) {
+                    return radio.value;
+                }
+            }
+            return 'iupac'; // default
+        }
+
+        // Examples for each mode
+        const examples = {
+            iupac: [
+                { name: 'Ethanol', value: 'ethanol' },
+                { name: 'Benzene', value: 'benzene' },
+                { name: 'Acetylsalicylic acid', value: 'acetylsalicylic acid' },
+                { name: 'Caffeine', value: 'caffeine' }
+            ],
+            smiles: [
+                { name: 'Glucose', value: 'C(C1C(C(C(C(O1)O)O)O)O)O' },
+                { name: 'Morphine', value: 'CN1CCC23C4C(=O)C=CC2(C1CC5=C3C(=C(C=C5)O)O4)O' },
+                { name: 'Dopamine', value: 'C1=CC(=C(C=C1CCN)O)O' },
+                { name: 'Testosterone', value: 'CC12CCC3C(C1CCC2O)CCC4=CC(=O)CCC34C' }
+            ]
+        };
+
+        // Update placeholder text and examples based on selected mode
+        function updatePlaceholder() {
+            const mode = getSelectedMode();
+            if (mode === 'smiles') {
+                inputEl.placeholder = 'Например: CCO, C1=CC=CC=C1, CC(=O)Oc1ccccc1C(=O)O';
+            } else {
+                inputEl.placeholder = 'Например: ethanol, benzene, benzol';
+            }
+            updateExamples();
+        }
+
+        // Update example buttons based on selected mode
+        function updateExamples() {
+            const mode = getSelectedMode();
+            const modeExamples = examples[mode] || [];
+            
+            examplesContainer.innerHTML = modeExamples.map(example => `
+                <button
+                    type="button"
+                    onclick="insertExample('${example.value.replace(/'/g, "\\'")}')"
+                    class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors border border-gray-300 hover:border-gray-400"
+                    title="Вставить пример: ${example.value}"
+                >
+                    ${example.name}
+                </button>
+            `).join('');
+        }
+
+        // Insert example into input field
+        function insertExample(value) {
+            inputEl.value = value;
+            inputEl.focus();
+            // Trigger input event to update any listeners
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        // Convert IUPAC to SMILES using OPSIN web service
+        async function iupacToSmiles(iupacName) {
+            // Используем прокси для обхода CORS или альтернативный сервис
+            const urls = [
+                `https://www.ebi.ac.uk/opsin/ws/${encodeURIComponent(iupacName)}.smi`,
+                `https://opsin.ch.cam.ac.uk/opsin/${encodeURIComponent(iupacName)}.smi`
+            ];
+            
+            for (const url of urls) {
+                try {
+                    // Для обхода CORS можно использовать публичный прокси
+                    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+                    const response = await fetch(proxyUrl, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'text/plain'
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const smiles = await response.text();
+                        return smiles.trim();
+                    }
+                } catch (error) {
+                    console.warn(`Failed to fetch from ${url}:`, error);
+                }
+            }
+            
+            throw new Error('Не удалось конвертировать IUPAC название. Попробуйте проверить правильность написания.');
         }
 
         // Calculate molecular formula from SMILES
@@ -268,17 +401,29 @@
             convertBtn.disabled = true;
 
             try {
+                let smiles = input;
+                const inputMode = getSelectedMode();
+                let originalIupacName = null;
+                
+                // Если выбран режим IUPAC, сначала конвертируем в SMILES
+                if (inputMode === 'iupac') {
+                    showStatus('loading', 'Конвертация IUPAC названия...', 'Обращение к веб-сервису OPSIN');
+                    originalIupacName = input;
+                    try {
+                        smiles = await iupacToSmiles(input);
+                        showToast('IUPAC название успешно конвертировано', 'success');
+                    } catch (error) {
+                        throw new Error(`Ошибка конвертации IUPAC: ${error.message}`);
+                    }
+                }
+
+                // Теперь обрабатываем SMILES с помощью RDKit
                 let mol = null;
                 
-                // Try to parse molecule
                 try {
-                    mol = window.RDKit.get_mol(input);
-                } catch {
-                    try {
-                        mol = window.RDKit.get_mol_from_inchi(input);
-                    } catch {
-                        throw new Error("Не удалось распознать молекулу");
-                    }
+                    mol = window.RDKit.get_mol(smiles);
+                } catch (e) {
+                    throw new Error("Не удалось распознать молекулу. Проверьте правильность записи.");
                 }
 
                 if (!mol) {
@@ -286,10 +431,10 @@
                 }
 
                 // Get formats - пробуем стандартные методы молекулы RDKit
-                let smiles = 'N/A', inchi = 'N/A', formula = 'N/A';
+                let canonicalSmiles = 'N/A', inchi = 'N/A', formula = 'N/A';
                 
                 try {
-                    smiles = mol.get_smiles();
+                    canonicalSmiles = mol.get_smiles();
                 } catch (e) {
                     console.warn('get_smiles failed:', e);
                 }
@@ -310,12 +455,12 @@
                         formula = mol.formula();
                     } else {
                         // Вычисляем формулу из SMILES если RDKit методы недоступны
-                        formula = calculateMolecularFormula(smiles);
+                        formula = calculateMolecularFormula(canonicalSmiles);
                     }
                 } catch (e) {
                     console.warn('Formula methods failed:', e);
                     // Fallback: вычисляем формулу из SMILES
-                    formula = calculateMolecularFormula(smiles);
+                    formula = calculateMolecularFormula(canonicalSmiles);
                 }
                 
                 // Try different ways to get InChIKey
@@ -332,7 +477,8 @@
                 }
 
                 const formats = {
-                    "Canonical SMILES": smiles,
+                    ...(originalIupacName && { "IUPAC название": originalIupacName }),
+                    "Canonical SMILES": canonicalSmiles,
                     "InChI": inchi,
                     "InChIKey": inchikey,
                     "Молекулярная формула": formula
@@ -349,12 +495,15 @@
                 // Clean up
                 mol.delete();
 
+                // Clear status
+                statusContainer.innerHTML = '';
+
                 // Show results
                 showResults(formats, svg);
                 showToast('Молекула успешно обработана!', 'success');
 
             } catch (error) {
-                showToast(error.message, 'error');
+                showStatus('error', 'Ошибка обработки', error.message);
                 resultsContainer.innerHTML = '';
             } finally {
                 loading = false;
@@ -425,6 +574,7 @@
                         showStatus('error', 'Ошибка загрузки RDKit', error.message);
                     });
             } else {
+                console.log('Waiting for RDKit to load...');
                 setTimeout(initializeRDKit, 1000); // Try again in 1 second
             }
         }
@@ -438,10 +588,16 @@
             }
         });
 
+        // Update placeholder when mode changes
+        document.querySelectorAll('input[name="input-mode"]').forEach(radio => {
+            radio.addEventListener('change', updatePlaceholder);
+        });
+
         // Initialize when page loads
         window.addEventListener('load', () => {
+            updatePlaceholder(); // Set initial placeholder and examples
             setTimeout(initializeRDKit, 500);
         });
     </script>
 </body>
-</html> 
+</html>
